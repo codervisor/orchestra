@@ -222,7 +222,7 @@ The following issues from the review have been addressed:
 
 | # | Issue | Fix |
 |---|-------|-----|
-| 1 | Script injection via `issue_body` (High) | Moved all user-controlled data (`issue_body`, `issue_title`, `failure_reason`, `ci_log`) to environment variables; prompts written to temp files via `printf '%s'` (no shell expansion); agent instructed to read the prompt file rather than receiving body content on the command line |
+| 1 | Script injection via `issue_body` (High) | Replaced shell-based temp file writes with `actions/github-script` using Node.js `fs.writeFileSync`; user-controlled data flows through env vars into JS string concatenation (no shell interpretation); eliminates both `${{ }}` expression injection and shell metacharacter injection |
 | 2 | Infinite retry loop (Medium) | Replaced hardcoded `ATTEMPT=2` with actual PR comment counting via GitHub API |
 | 3 | Release tag wrong SHA (Medium) | Replaced `context.sha` with `git.getRef('heads/main')` to capture post-merge HEAD |
 | 4 | Duplicate `ai-delivery-pipeline.yaml` (Low) | Removed root copy; single source of truth in `.github/workflows/` |

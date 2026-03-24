@@ -121,24 +121,35 @@ jobs:
       # Copilot coding agent opens a draft PR asynchronously in the cloud
       - name: Write prompt file
         id: delegate-prompt
+        uses: actions/github-script@v7
         env:
           ISSUE_NUMBER: ${{ needs.pickup.outputs.issue_number }}
           ISSUE_TITLE: ${{ needs.pickup.outputs.issue_title }}
           ISSUE_BODY: ${{ needs.pickup.outputs.issue_body }}
-        run: |
-          PROMPT_FILE=$(mktemp "${RUNNER_TEMP}/prompt-XXXXXX.txt")
-          # printf '%s' safely writes variables without shell expansion.
-          {
-            printf '/delegate Implement issue #%s: %s\n\n' "$ISSUE_NUMBER" "$ISSUE_TITLE"
-            printf '%s\n\n' "$ISSUE_BODY"
-            cat <<'STATIC_EOF'
-          Requirements:
-          - Follow existing code conventions
-          - Add or update tests
-          - Do NOT modify CI/CD configs or infrastructure files
-          STATIC_EOF
-          } > "$PROMPT_FILE"
-          echo "prompt_file=$PROMPT_FILE" >> "$GITHUB_OUTPUT"
+        with:
+          script: |
+            const fs = require('fs');
+            const os = require('os');
+            const path = require('path');
+
+            const promptFile = path.join(
+              process.env.RUNNER_TEMP || os.tmpdir(),
+              `prompt-${Date.now()}.txt`
+            );
+
+            const content = [
+              `/delegate Implement issue #${process.env.ISSUE_NUMBER}: ${process.env.ISSUE_TITLE}`,
+              '',
+              process.env.ISSUE_BODY,
+              '',
+              'Requirements:',
+              '- Follow existing code conventions',
+              '- Add or update tests',
+              '- Do NOT modify CI/CD configs or infrastructure files',
+            ].join('\n');
+
+            fs.writeFileSync(promptFile, content, 'utf8');
+            core.setOutput('prompt_file', promptFile);
 
       - name: Delegate to Copilot coding agent
         env:
@@ -282,31 +293,46 @@ jobs:
       # --no-ask-user = never block waiting for human input
       - name: Write prompt file
         id: local-prompt
+        uses: actions/github-script@v7
         env:
           ISSUE_NUMBER: ${{ needs.pickup.outputs.issue_number }}
           ISSUE_TITLE: ${{ needs.pickup.outputs.issue_title }}
           ISSUE_BODY: ${{ needs.pickup.outputs.issue_body }}
           ATTEMPT: ${{ steps.counter.outputs.attempt }}
-        run: |
-          PROMPT_FILE=$(mktemp "${RUNNER_TEMP}/prompt-XXXXXX.txt")
-          # printf '%s' safely writes variables without shell expansion.
-          {
-            printf 'Implement issue #%s: %s\n\n' "$ISSUE_NUMBER" "$ISSUE_TITLE"
-            printf '%s\n\n' "$ISSUE_BODY"
-            if [ "$ATTEMPT" -gt 1 ]; then
-              printf 'Previous attempt failed CI. See CI logs above. Fix these issues.\n\n'
-            fi
-            cat <<'STATIC_EOF'
-          Instructions:
-          - Read the codebase structure first
-          - Implement the feature/fix
-          - Follow existing conventions
-          - Add or update tests
-          - Do NOT modify CI/CD, Docker, or infra files
-          STATIC_EOF
-            printf -- '- Commit with: feat(#%s): <summary>\n' "$ISSUE_NUMBER"
-          } > "$PROMPT_FILE"
-          echo "prompt_file=$PROMPT_FILE" >> "$GITHUB_OUTPUT"
+        with:
+          script: |
+            const fs = require('fs');
+            const os = require('os');
+            const path = require('path');
+
+            const promptFile = path.join(
+              process.env.RUNNER_TEMP || os.tmpdir(),
+              `prompt-${Date.now()}.txt`
+            );
+
+            const lines = [
+              `Implement issue #${process.env.ISSUE_NUMBER}: ${process.env.ISSUE_TITLE}`,
+              '',
+              process.env.ISSUE_BODY,
+              '',
+            ];
+
+            if (Number(process.env.ATTEMPT) > 1) {
+              lines.push('Previous attempt failed CI. See CI logs above. Fix these issues.', '');
+            }
+
+            lines.push(
+              'Instructions:',
+              '- Read the codebase structure first',
+              '- Implement the feature/fix',
+              '- Follow existing conventions',
+              '- Add or update tests',
+              '- Do NOT modify CI/CD, Docker, or infra files',
+              `- Commit with: feat(#${process.env.ISSUE_NUMBER}): <summary>`,
+            );
+
+            fs.writeFileSync(promptFile, lines.join('\n'), 'utf8');
+            core.setOutput('prompt_file', promptFile);
 
       - name: AI Implementation
         env:
