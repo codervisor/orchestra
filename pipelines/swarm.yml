@@ -37,11 +37,11 @@ steps:
     steps:
       - name: checkpoint
         type: run
-        command: synodic swarm checkpoint
+        command: orchestra swarm checkpoint
 
       - name: prune
         type: run
-        command: synodic swarm prune
+        command: orchestra swarm prune
 
   - name: merge
     type: agent

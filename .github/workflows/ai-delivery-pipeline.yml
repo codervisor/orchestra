@@ -53,6 +53,10 @@ permissions:
   issues: write
   actions: write
 
+concurrency:
+  group: ai-pipeline-${{ github.event.inputs.issue_number || github.event.issue.number }}
+  cancel-in-progress: false
+
 env:
   MAX_RETRIES: ${{ inputs.max_retries || 3 }}
 
@@ -115,6 +119,25 @@ jobs:
 
       # /delegate: commits unstaged changes to new branch,
       # Copilot coding agent opens a draft PR asynchronously in the cloud
+      - name: Write prompt file
+        env:
+          ISSUE_NUMBER: ${{ needs.pickup.outputs.issue_number }}
+          ISSUE_TITLE: ${{ needs.pickup.outputs.issue_title }}
+          ISSUE_BODY: ${{ needs.pickup.outputs.issue_body }}
+        run: |
+          # Write prompt to file without shell expansion of body content.
+          # printf '%s' safely writes the variable without interpreting it.
+          {
+            printf '/delegate Implement issue #%s: %s\n\n' "$ISSUE_NUMBER" "$ISSUE_TITLE"
+            printf '%s\n\n' "$ISSUE_BODY"
+            cat <<'STATIC_EOF'
+          Requirements:
+          - Follow existing code conventions
+          - Add or update tests
+          - Do NOT modify CI/CD configs or infrastructure files
+          STATIC_EOF
+          } > /tmp/prompt.txt
+
       - name: Delegate to Copilot coding agent
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -125,14 +148,7 @@ jobs:
             --allow-tool=write \
             --no-ask-user \
             --model "claude-sonnet-4" \
-            -p "/delegate Implement issue #${{ needs.pickup.outputs.issue_number }}: ${{ needs.pickup.outputs.issue_title }}
-
-          ${{ needs.pickup.outputs.issue_body }}
-
-          Requirements:
-          - Follow existing code conventions
-          - Add or update tests
-          - Do NOT modify CI/CD configs or infrastructure files"
+            -p "Read the file /tmp/prompt.txt for your full instructions. Follow them exactly."
 
       # Poll for the PR that Copilot coding agent creates
       - name: Wait for Copilot PR
@@ -193,24 +209,56 @@ jobs:
 
       - name: Track attempt count
         id: counter
-        run: |
-          # Attempt tracking via PR comments or branch naming
-          BRANCH="ai/issue-${{ needs.pickup.outputs.issue_number }}"
-          ATTEMPT=$(git branch -r --list "origin/${BRANCH}" | wc -l)
-          # If branch exists, this is a retry
-          if git ls-remote --heads origin "$BRANCH" | grep -q .; then
-            # Count retry comments on existing PR
-            ATTEMPT=2  # simplified; production would parse PR comments
-          else
-            ATTEMPT=1
-          fi
-          echo "attempt=$ATTEMPT" >> "$GITHUB_OUTPUT"
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNum = '${{ needs.pickup.outputs.issue_number }}';
+            const branch = `ai/issue-${issueNum}`;
+            const maxRetries = Number('${{ env.MAX_RETRIES }}');
 
-          if [ "$ATTEMPT" -gt "${{ env.MAX_RETRIES }}" ]; then
-            echo "::error::Max retries exceeded"
-            exit 1
-          fi
+            // Check if branch already exists (indicates retry)
+            let attempt = 1;
+            try {
+              const { data: ref } = await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branch}`,
+              });
+
+              // Branch exists — count retry comments on the existing PR
+              const { data: prs } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head: `${context.repo.owner}:${branch}`,
+                state: 'open',
+              });
+
+              if (prs.length > 0) {
+                const { data: comments } = await github.rest.issues.listComments({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prs[0].number,
+                });
+                // Count bot retry comments to determine attempt number
+                const retryComments = comments.filter(c =>
+                  c.body?.includes('Copilot retry attempt') || c.body?.includes('CI failed')
+                );
+                attempt = retryComments.length + 1;
+              } else {
+                attempt = 2; // branch exists but no PR yet
+              }
+            } catch (e) {
+              // Branch doesn't exist — first attempt
+              attempt = 1;
+            }
+
+            if (attempt > maxRetries) {
+              core.setFailed(`Max retries exceeded (attempt ${attempt}/${maxRetries})`);
+              return;
+            }
+
+            core.setOutput('attempt', attempt);
+            core.setOutput('branch', branch);
 
       - name: Create or checkout branch
         run: |
@@ -228,18 +276,36 @@ jobs:
       # --autopilot = autonomous multi-step execution
       # --allow-tool / --deny-tool = declarative permission boundary
       # --no-ask-user = never block waiting for human input
+      - name: Write prompt file
+        env:
+          ISSUE_NUMBER: ${{ needs.pickup.outputs.issue_number }}
+          ISSUE_TITLE: ${{ needs.pickup.outputs.issue_title }}
+          ISSUE_BODY: ${{ needs.pickup.outputs.issue_body }}
+          ATTEMPT: ${{ steps.counter.outputs.attempt }}
+        run: |
+          # Write prompt to file without shell expansion of body content.
+          # printf '%s' safely writes the variable without interpreting it.
+          {
+            printf 'Implement issue #%s: %s\n\n' "$ISSUE_NUMBER" "$ISSUE_TITLE"
+            printf '%s\n\n' "$ISSUE_BODY"
+            if [ "$ATTEMPT" -gt 1 ]; then
+              printf 'Previous attempt failed CI. See CI logs above. Fix these issues.\n\n'
+            fi
+            cat <<'STATIC_EOF'
+          Instructions:
+          - Read the codebase structure first
+          - Implement the feature/fix
+          - Follow existing conventions
+          - Add or update tests
+          - Do NOT modify CI/CD, Docker, or infra files
+          STATIC_EOF
+            printf -- '- Commit with: feat(#%s): <summary>\n' "$ISSUE_NUMBER"
+          } > /tmp/prompt.txt
+
       - name: AI Implementation
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Gather CI feedback for retries
-          FEEDBACK=""
-          if [ "${{ steps.counter.outputs.attempt }}" -gt 1 ]; then
-            FEEDBACK="Previous attempt failed CI. Errors:
-          ${{ needs.qa-gate.outputs.failure_reason || 'See CI logs above' }}
-          Fix these issues."
-          fi
-
           copilot --autopilot \
             --max-autopilot-continues 15 \
             --allow-tool='shell(git:*)' \
@@ -255,19 +321,7 @@ jobs:
             --deny-tool='shell(wget:*)' \
             --no-ask-user \
             --model "claude-sonnet-4" \
-            -p "Implement issue #${{ needs.pickup.outputs.issue_number }}: ${{ needs.pickup.outputs.issue_title }}
-
-          ${{ needs.pickup.outputs.issue_body }}
-
-          ${FEEDBACK}
-
-          Instructions:
-          - Read the codebase structure first
-          - Implement the feature/fix
-          - Follow existing conventions
-          - Add or update tests
-          - Do NOT modify CI/CD, Docker, or infra files
-          - Commit with: feat(#${{ needs.pickup.outputs.issue_number }}): <summary>"
+            -p "Read the file /tmp/prompt.txt for your full instructions. Follow them exactly."
 
       - name: Push changes
         run: |
@@ -415,7 +469,8 @@ jobs:
   # 4. QA GATE: AI self-review + decide next step
   # ──────────────────────────────────────────────
   qa-gate:
-    needs: [pickup, resolve, ci]
+    needs: [pickup, resolve, ci, code-local]
+    if: always() && needs.ci.result == 'success'
     runs-on: ubuntu-latest
     outputs:
       decision:       ${{ steps.decide.outputs.decision }}
@@ -450,13 +505,15 @@ jobs:
       - name: Decide next step
         id: decide
         uses: actions/github-script@v7
+        env:
+          CI_LOG: ${{ needs.ci.outputs.log }}
         with:
           script: |
             const ciPassed = '${{ needs.ci.outputs.passed }}' === 'true';
-            const attempt = Number('${{ needs.code-local.outputs.attempt || 1 }}');
+            const attempt = Number('${{ needs.code-local.outputs.attempt }}') || 1;
             const maxRetries = Number('${{ env.MAX_RETRIES }}');
             const prNumber = Number('${{ needs.resolve.outputs.pr_number }}');
-            const ciLog = `${{ needs.ci.outputs.log }}`;
+            const ciLog = process.env.CI_LOG || '';
 
             if (ciPassed) {
               core.setOutput('decision', 'proceed');
@@ -499,13 +556,16 @@ jobs:
       # Copilot coding agent picks it up and pushes fixes
       - name: Ask Copilot to fix via PR comment
         uses: actions/github-script@v7
+        env:
+          FAILURE_REASON: ${{ needs.qa-gate.outputs.failure_reason }}
         with:
           script: |
+            const failureReason = process.env.FAILURE_REASON || 'See CI logs';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: Number('${{ needs.resolve.outputs.pr_number }}'),
-              body: `@copilot CI failed. Please fix these errors:\n\n\`\`\`\n${{ needs.qa-gate.outputs.failure_reason }}\n\`\`\`\n\nThen push the fixes to this PR.`,
+              body: `@copilot CI failed. Please fix these errors:\n\n\`\`\`\n${failureReason}\n\`\`\`\n\nThen push the fixes to this PR.`,
             });
             // Copilot coding agent will pick up the @copilot mention
             // and push fixes to the same branch/PR
@@ -587,22 +647,32 @@ jobs:
 
       - name: Create release
         uses: actions/github-script@v7
+        env:
+          ISSUE_TITLE: ${{ needs.pickup.outputs.issue_title }}
         with:
           script: |
             const issueNum = '${{ needs.pickup.outputs.issue_number }}';
             const tag = `v${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${issueNum}`;
 
+            // Get the actual HEAD of main after squash merge (not context.sha
+            // which is the pre-merge SHA from workflow trigger time)
+            const { data: ref } = await github.rest.git.getRef({
+              owner: context.repo.owner, repo: context.repo.repo,
+              ref: 'heads/main',
+            });
+            const mergeSha = ref.object.sha;
+
             await github.rest.git.createRef({
               owner: context.repo.owner, repo: context.repo.repo,
               ref: `refs/tags/${tag}`,
-              sha: context.sha,
+              sha: mergeSha,
             });
 
             await github.rest.repos.createRelease({
               owner: context.repo.owner, repo: context.repo.repo,
               tag_name: tag,
               name: `Release ${tag}`,
-              body: `AI delivery for #${issueNum}: ${{ needs.pickup.outputs.issue_title }}`,
+              body: `AI delivery for #${issueNum}: ${process.env.ISSUE_TITLE}`,
               generate_release_notes: true,
             });
 

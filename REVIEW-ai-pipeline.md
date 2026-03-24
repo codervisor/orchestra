@@ -214,6 +214,33 @@ adding a gate that checks for `gh` availability.
 | 10 | `vars.rs` | Low | Regex recompiled per call |
 | 11 | `pipelines/*.yml` | Low | `synodic` CLI name may be stale |
 
+---
+
+## 5. Fixes Applied
+
+The following issues from the review have been addressed:
+
+| # | Issue | Fix |
+|---|-------|-----|
+| 1 | Script injection via `issue_body` (High) | Moved all user-controlled data (`issue_body`, `issue_title`, `failure_reason`, `ci_log`) to environment variables; prompts written to temp files via `printf '%s'` (no shell expansion); agent instructed to read the prompt file rather than receiving body content on the command line |
+| 2 | Infinite retry loop (Medium) | Replaced hardcoded `ATTEMPT=2` with actual PR comment counting via GitHub API |
+| 3 | Release tag wrong SHA (Medium) | Replaced `context.sha` with `git.getRef('heads/main')` to capture post-merge HEAD |
+| 4 | Duplicate `ai-delivery-pipeline.yaml` (Low) | Removed root copy; single source of truth in `.github/workflows/` |
+| 5 | Missing concurrency controls (Low) | Added `concurrency: group` keyed on issue number |
+| 6 | `qa-gate` reads non-dependency job (Low) | Added `code-local` to `qa-gate.needs` with `always()` condition |
+| 7 | `synodic` CLI name stale in pipelines (Low) | Renamed to `orchestra` in `fractal.yml` and `swarm.yml` |
+
+### Remaining (Rust engine — not addressed in this pass)
+
+| # | Issue | Severity |
+|---|-------|----------|
+| 7 | Fan collection ignores `over`/`step` template | Medium |
+| 8 | Fan parallel runs sequentially (documented) | Low |
+| 9 | Branch verdict matching via substring is fragile | Low |
+| 10 | Regex recompiled per call in `vars.rs` | Low |
+
+---
+
 ### What's working well
 
 - The 4-step-type pipeline schema is clean, composable, and well-tested

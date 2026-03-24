@@ -9,7 +9,7 @@ config:
 steps:
   - name: complexity-check
     type: run
-    command: synodic fractal complexity -i ${spec.path}
+    command: orchestra fractal complexity -i ${spec.path}
 
   - name: decompose
     type: fan
@@ -28,11 +28,11 @@ steps:
 
       - name: decompose-gate
         type: run
-        command: synodic fractal gate
+        command: orchestra fractal gate
 
   - name: schedule
     type: run
-    command: synodic fractal schedule
+    command: orchestra fractal schedule
 
   - name: solve
     type: fan
@@ -55,7 +55,7 @@ steps:
 
   - name: reunify
     type: run
-    command: synodic fractal reunify
+    command: orchestra fractal reunify
 
   - name: reunify-resolve
     type: agent
@@ -68,7 +68,7 @@ steps:
 
   - name: prune
     type: run
-    command: synodic fractal prune
+    command: orchestra fractal prune
 
   - name: create-pr
     type: run
