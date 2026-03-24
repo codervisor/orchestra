@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "leanspec-development": {
+      "source": "codervisor/lean-spec",
+      "sourceType": "github",
+      "computedHash": "2d46639f01138e7fd1b042f320885ee28ff70d58dbee7d6d5f46261ade69e0f3"
+    }
+  }
+}
