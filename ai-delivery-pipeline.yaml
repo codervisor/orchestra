@@ -1,0 +1,658 @@
+# ============================================================
+# AI-Driven End-to-End Delivery Pipeline
+# Agent: @github/copilot (npm install -g @github/copilot)
+#
+# Key Copilot CLI flags for CI:
+#   -p "PROMPT"          non-interactive single-shot
+#   --autopilot          autonomous multi-step execution
+#   --max-autopilot-continues N   cap iterations
+#   --allow-tool='TYPE'  whitelist (shell(git:*), read, write)
+#   --deny-tool='TYPE'   blacklist (shell(rm -rf), etc.)
+#   --yolo / --allow-all skip ALL permission checks (≈ claude --dangerously-skip-permissions)
+#   --no-ask-user        never block for human input
+#   --model MODEL        select model (claude-sonnet-4, gpt-5, etc.)
+#   -s / --silent        suppress metadata output
+#   /delegate            hand off to cloud coding agent (async)
+#
+# Two strategies:
+#   A — /delegate (cloud agent, fully async)
+#   B — copilot -p  (local programmatic, in-runner)
+#
+# Graph: pickup → ai-code → ci → qa-gate ←(loop)→ ai-fix → release
+# ============================================================
+
+name: AI Delivery Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "GitHub Issue number to implement"
+        required: true
+        type: number
+      strategy:
+        description: "Agent strategy"
+        required: false
+        type: choice
+        options:
+          - delegate    # Strategy A: cloud coding agent
+          - local       # Strategy B: programmatic mode in runner
+        default: local
+      max_retries:
+        description: "Max QA loop retries"
+        required: false
+        type: number
+        default: 3
+
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+env:
+  MAX_RETRIES: ${{ inputs.max_retries || 3 }}
+
+jobs:
+  # ──────────────────────────────────────────────
+  # 1. PICKUP: Extract issue context, determine strategy
+  # ──────────────────────────────────────────────
+  pickup:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' && github.event.label.name == 'ai-implement')
+    outputs:
+      issue_number: ${{ steps.ctx.outputs.issue_number }}
+      issue_title:  ${{ steps.ctx.outputs.issue_title }}
+      issue_body:   ${{ steps.ctx.outputs.issue_body }}
+      strategy:     ${{ steps.ctx.outputs.strategy }}
+    steps:
+      - name: Extract issue context
+        id: ctx
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const num = context.payload.inputs?.issue_number
+              || context.payload.issue?.number;
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(num),
+            });
+
+            core.setOutput('issue_number', num);
+            core.setOutput('issue_title', issue.title);
+            core.setOutput('issue_body', issue.body || '');
+            core.setOutput('strategy', '${{ inputs.strategy || 'local' }}');
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(num),
+              labels: ['ai-in-progress'],
+            });
+
+  # ================================================================
+  #  STRATEGY A: /delegate — Cloud Copilot Coding Agent
+  #  Copilot handles branch + code + PR autonomously in the cloud.
+  #  Pipeline just waits for PR, then runs CI/QA/CD on it.
+  # ================================================================
+  delegate:
+    needs: pickup
+    if: needs.pickup.outputs.strategy == 'delegate'
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.wait.outputs.pr_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Copilot CLI
+        run: npm install -g @github/copilot
+
+      # /delegate: commits unstaged changes to new branch,
+      # Copilot coding agent opens a draft PR asynchronously in the cloud
+      - name: Delegate to Copilot coding agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          copilot --autopilot \
+            --allow-tool='shell(git:*)' \
+            --allow-tool=read \
+            --allow-tool=write \
+            --no-ask-user \
+            --model "claude-sonnet-4" \
+            -p "/delegate Implement issue #${{ needs.pickup.outputs.issue_number }}: ${{ needs.pickup.outputs.issue_title }}
+
+          ${{ needs.pickup.outputs.issue_body }}
+
+          Requirements:
+          - Follow existing code conventions
+          - Add or update tests
+          - Do NOT modify CI/CD configs or infrastructure files"
+
+      # Poll for the PR that Copilot coding agent creates
+      - name: Wait for Copilot PR
+        id: wait
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNum = '${{ needs.pickup.outputs.issue_number }}';
+            const maxWait = 30 * 60 * 1000; // 30 min timeout
+            const interval = 30 * 1000;      // poll every 30s
+            let elapsed = 0;
+
+            while (elapsed < maxWait) {
+              const { data: prs } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                sort: 'created',
+                direction: 'desc',
+                per_page: 10,
+              });
+
+              // Find PR that references this issue (created by copilot)
+              const match = prs.find(pr =>
+                pr.body?.includes(`#${issueNum}`) &&
+                pr.user?.login?.includes('copilot')
+              );
+
+              if (match) {
+                core.setOutput('pr_number', match.number);
+                return;
+              }
+
+              await new Promise(r => setTimeout(r, interval));
+              elapsed += interval;
+            }
+
+            core.setFailed('Timeout waiting for Copilot coding agent PR');
+
+  # ================================================================
+  #  STRATEGY B: Local Programmatic Mode
+  #  Copilot runs in the GitHub Actions runner, full control.
+  # ================================================================
+  code-local:
+    needs: pickup
+    if: needs.pickup.outputs.strategy == 'local'
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.pr.outputs.pr_number }}
+      attempt:   ${{ steps.counter.outputs.attempt }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Track attempt count
+        id: counter
+        run: |
+          # Attempt tracking via PR comments or branch naming
+          BRANCH="ai/issue-${{ needs.pickup.outputs.issue_number }}"
+          ATTEMPT=$(git branch -r --list "origin/${BRANCH}" | wc -l)
+          # If branch exists, this is a retry
+          if git ls-remote --heads origin "$BRANCH" | grep -q .; then
+            # Count retry comments on existing PR
+            ATTEMPT=2  # simplified; production would parse PR comments
+          else
+            ATTEMPT=1
+          fi
+          echo "attempt=$ATTEMPT" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          if [ "$ATTEMPT" -gt "${{ env.MAX_RETRIES }}" ]; then
+            echo "::error::Max retries exceeded"
+            exit 1
+          fi
+
+      - name: Create or checkout branch
+        run: |
+          BRANCH="${{ steps.counter.outputs.branch }}"
+          git fetch origin
+          if git ls-remote --heads origin "$BRANCH" | grep -q .; then
+            git checkout "$BRANCH"
+            git pull origin "$BRANCH"
+          else
+            git checkout -b "$BRANCH"
+          fi
+
+      # ── Copilot CLI: Programmatic mode ──
+      # -p        = non-interactive single-shot
+      # --autopilot = autonomous multi-step execution
+      # --allow-tool / --deny-tool = declarative permission boundary
+      # --no-ask-user = never block waiting for human input
+      - name: AI Implementation
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Gather CI feedback for retries
+          FEEDBACK=""
+          if [ "${{ steps.counter.outputs.attempt }}" -gt 1 ]; then
+            FEEDBACK="Previous attempt failed CI. Errors:
+          ${{ needs.qa-gate.outputs.failure_reason || 'See CI logs above' }}
+          Fix these issues."
+          fi
+
+          copilot --autopilot \
+            --max-autopilot-continues 15 \
+            --allow-tool='shell(git:*)' \
+            --allow-tool='shell(npm:*)' \
+            --allow-tool='shell(node:*)' \
+            --allow-tool='shell(npx:*)' \
+            --allow-tool=read \
+            --allow-tool=write \
+            --deny-tool='shell(git push)' \
+            --deny-tool='shell(git push --force)' \
+            --deny-tool='shell(rm -rf)' \
+            --deny-tool='shell(curl:*)' \
+            --deny-tool='shell(wget:*)' \
+            --no-ask-user \
+            --model "claude-sonnet-4" \
+            -p "Implement issue #${{ needs.pickup.outputs.issue_number }}: ${{ needs.pickup.outputs.issue_title }}
+
+          ${{ needs.pickup.outputs.issue_body }}
+
+          ${FEEDBACK}
+
+          Instructions:
+          - Read the codebase structure first
+          - Implement the feature/fix
+          - Follow existing conventions
+          - Add or update tests
+          - Do NOT modify CI/CD, Docker, or infra files
+          - Commit with: feat(#${{ needs.pickup.outputs.issue_number }}): <summary>"
+
+      - name: Push changes
+        run: |
+          BRANCH="${{ steps.counter.outputs.branch }}"
+          git push -u origin "$BRANCH"
+
+      - name: Create or update PR
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = '${{ steps.counter.outputs.branch }}';
+            const issueNum = '${{ needs.pickup.outputs.issue_number }}';
+            const attempt = '${{ steps.counter.outputs.attempt }}';
+
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${branch}`,
+              state: 'open',
+            });
+
+            let prNumber;
+            if (prs.length > 0) {
+              prNumber = prs[0].number;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: `🤖 Copilot retry attempt #${attempt} — new changes pushed.`,
+              });
+            } else {
+              const { data: pr } = await github.rest.pulls.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🤖 AI: ${`${{ needs.pickup.outputs.issue_title }}`}`,
+                head: branch,
+                base: 'main',
+                body: [
+                  `Closes #${issueNum}`,
+                  '',
+                  '## AI-Generated Implementation',
+                  `- Agent: GitHub Copilot CLI (\`@github/copilot\`)`,
+                  `- Attempt: #${attempt}`,
+                  '',
+                  '> ⚠️ AI-generated. Review carefully.',
+                ].join('\n'),
+                draft: true,
+              });
+              prNumber = pr.number;
+            }
+            core.setOutput('pr_number', prNumber);
+
+  # ──────────────────────────────────────────────
+  # 2. RESOLVE PR NUMBER (from either strategy)
+  # ──────────────────────────────────────────────
+  resolve:
+    needs: [pickup, delegate, code-local]
+    if: always() && (needs.delegate.result == 'success' || needs.code-local.result == 'success')
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      branch:    ${{ steps.resolve.outputs.branch }}
+    steps:
+      - name: Resolve PR
+        id: resolve
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNum = '${{ needs.delegate.outputs.pr_number }}'
+              || '${{ needs.code-local.outputs.pr_number }}';
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number(prNum),
+            });
+
+            core.setOutput('pr_number', prNum);
+            core.setOutput('branch', pr.head.ref);
+
+  # ──────────────────────────────────────────────
+  # 3. CI: Build + Test + Lint
+  # ──────────────────────────────────────────────
+  ci:
+    needs: resolve
+    runs-on: ubuntu-latest
+    outputs:
+      passed: ${{ steps.result.outputs.passed }}
+      log:    ${{ steps.result.outputs.log }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.branch }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        id: lint
+        run: npm run lint 2>&1 | tee /tmp/lint.log
+        continue-on-error: true
+
+      - name: Typecheck
+        id: typecheck
+        run: npm run typecheck 2>&1 | tee /tmp/typecheck.log
+        continue-on-error: true
+
+      - name: Test
+        id: test
+        run: npm run test 2>&1 | tee /tmp/test.log
+        continue-on-error: true
+
+      - name: Build
+        id: build
+        run: npm run build 2>&1 | tee /tmp/build.log
+        continue-on-error: true
+
+      - name: Aggregate results
+        id: result
+        run: |
+          PASSED=true
+          LOG=""
+          for step in lint typecheck test build; do
+            STATUS=$(cat "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "")
+            if [ "${{ steps[format('{0}', steps[step])].outcome }}" = "failure" ] 2>/dev/null; then
+              PASSED=false
+              LOG+="=== ${step} FAILED ===\n$(tail -50 /tmp/${step}.log)\n\n"
+            fi
+          done
+
+          # Simpler check
+          for step_name in lint typecheck test build; do
+            if [ -f "/tmp/${step_name}.log" ]; then
+              if grep -qiE "(error|FAIL|failed)" "/tmp/${step_name}.log" 2>/dev/null; then
+                PASSED=false
+                LOG+="=== ${step_name} FAILED ===\n$(tail -30 /tmp/${step_name}.log)\n\n"
+              fi
+            fi
+          done
+
+          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+          echo "log<<EOF" >> "$GITHUB_OUTPUT"
+          echo -e "$LOG" | head -c 1000 >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+  # ──────────────────────────────────────────────
+  # 4. QA GATE: AI self-review + decide next step
+  # ──────────────────────────────────────────────
+  qa-gate:
+    needs: [pickup, resolve, ci]
+    runs-on: ubuntu-latest
+    outputs:
+      decision:       ${{ steps.decide.outputs.decision }}
+      failure_reason: ${{ steps.decide.outputs.failure_reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.branch }}
+
+      # Use Copilot's built-in Code Review agent for self-review
+      - name: Install Copilot CLI
+        if: needs.ci.outputs.passed == 'true'
+        run: npm install -g @github/copilot
+
+      - name: Copilot self-review
+        if: needs.ci.outputs.passed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Copilot CLI auto-delegates to its built-in Code Review agent
+          copilot --autopilot \
+            --allow-tool=read \
+            --allow-tool='shell(git:*)' \
+            --no-ask-user \
+            --model "claude-sonnet-4" \
+            -s \
+            -p "Review the changes in PR #${{ needs.resolve.outputs.pr_number }}.
+          Check for: security issues, logic errors, missing edge cases, test coverage.
+          If issues found, list them. Otherwise confirm the code is ready." \
+            | tee /tmp/review.log
+
+      - name: Decide next step
+        id: decide
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ciPassed = '${{ needs.ci.outputs.passed }}' === 'true';
+            const attempt = Number('${{ needs.code-local.outputs.attempt || 1 }}');
+            const maxRetries = Number('${{ env.MAX_RETRIES }}');
+            const prNumber = Number('${{ needs.resolve.outputs.pr_number }}');
+            const ciLog = `${{ needs.ci.outputs.log }}`;
+
+            if (ciPassed) {
+              core.setOutput('decision', 'proceed');
+              core.setOutput('failure_reason', '');
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: prNumber,
+                body: `✅ CI passed + Copilot self-review complete (attempt #${attempt}). Ready for human review.`,
+              });
+
+            } else if (attempt < maxRetries) {
+              core.setOutput('decision', 'retry');
+              core.setOutput('failure_reason', ciLog);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: prNumber,
+                body: `❌ CI failed (attempt #${attempt}/${maxRetries}). Retrying...\n\n\`\`\`\n${ciLog.slice(0, 500)}\n\`\`\``,
+              });
+
+            } else {
+              core.setOutput('decision', 'escalate');
+              core.setOutput('failure_reason', ciLog);
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: prNumber,
+                body: `🚨 Failed after ${maxRetries} attempts. Escalating.\n\n\`\`\`\n${ciLog.slice(0, 500)}\n\`\`\``,
+              });
+            }
+
+  # ──────────────────────────────────────────────
+  # 4a. RETRY: AI fix loop
+  #     Use @copilot mention on PR OR re-trigger workflow
+  # ──────────────────────────────────────────────
+  retry-via-copilot:
+    needs: [pickup, resolve, qa-gate]
+    if: needs.qa-gate.outputs.decision == 'retry' && needs.pickup.outputs.strategy == 'delegate'
+    runs-on: ubuntu-latest
+    steps:
+      # Strategy A retry: mention @copilot on the PR with failure context
+      # Copilot coding agent picks it up and pushes fixes
+      - name: Ask Copilot to fix via PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number('${{ needs.resolve.outputs.pr_number }}'),
+              body: `@copilot CI failed. Please fix these errors:\n\n\`\`\`\n${{ needs.qa-gate.outputs.failure_reason }}\n\`\`\`\n\nThen push the fixes to this PR.`,
+            });
+            // Copilot coding agent will pick up the @copilot mention
+            // and push fixes to the same branch/PR
+
+  retry-via-dispatch:
+    needs: [pickup, qa-gate]
+    if: needs.qa-gate.outputs.decision == 'retry' && needs.pickup.outputs.strategy == 'local'
+    runs-on: ubuntu-latest
+    steps:
+      # Strategy B retry: re-trigger full workflow
+      - name: Re-trigger pipeline
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ai-delivery-pipeline.yml',
+              ref: 'main',
+              inputs: {
+                issue_number: '${{ needs.pickup.outputs.issue_number }}',
+                strategy: 'local',
+                max_retries: '${{ env.MAX_RETRIES }}',
+              },
+            });
+
+  # ──────────────────────────────────────────────
+  # 5. HUMAN QA: Manual approval gate
+  # ──────────────────────────────────────────────
+  human-qa:
+    needs: [resolve, qa-gate]
+    if: needs.qa-gate.outputs.decision == 'proceed'
+    runs-on: ubuntu-latest
+    environment:
+      name: qa-review
+      url: "https://github.com/${{ github.repository }}/pull/${{ needs.resolve.outputs.pr_number }}"
+    steps:
+      - run: echo "✅ Human QA approved PR #${{ needs.resolve.outputs.pr_number }}"
+
+  # ──────────────────────────────────────────────
+  # 6. CD: Merge + Deploy staging
+  # ──────────────────────────────────────────────
+  deploy-staging:
+    needs: [resolve, human-qa]
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+    steps:
+      - name: Merge PR (squash)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number('${{ needs.resolve.outputs.pr_number }}'),
+              merge_method: 'squash',
+            });
+
+      - uses: actions/checkout@v4
+        with: { ref: main }
+
+      - name: Deploy to staging
+        run: |
+          echo "🚀 Deploying to staging..."
+          # npm run deploy:staging
+
+  # ──────────────────────────────────────────────
+  # 7. RELEASE: Tag + Deploy production
+  # ──────────────────────────────────────────────
+  release:
+    needs: [pickup, resolve, deploy-staging]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: main }
+
+      - name: Create release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNum = '${{ needs.pickup.outputs.issue_number }}';
+            const tag = `v${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${issueNum}`;
+
+            await github.rest.git.createRef({
+              owner: context.repo.owner, repo: context.repo.repo,
+              ref: `refs/tags/${tag}`,
+              sha: context.sha,
+            });
+
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner, repo: context.repo.repo,
+              tag_name: tag,
+              name: `Release ${tag}`,
+              body: `AI delivery for #${issueNum}: ${{ needs.pickup.outputs.issue_title }}`,
+              generate_release_notes: true,
+            });
+
+      - name: Deploy production
+        run: |
+          echo "🚀 Deploying to production..."
+          # npm run deploy:prod
+
+      - name: Close issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.update({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: Number('${{ needs.pickup.outputs.issue_number }}'),
+              state: 'closed',
+            });
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: Number('${{ needs.pickup.outputs.issue_number }}'),
+              labels: ['ai-delivered'],
+            });
+
+  # ──────────────────────────────────────────────
+  # 8. ESCALATE: Human takeover
+  # ──────────────────────────────────────────────
+  escalate:
+    needs: [resolve, qa-gate]
+    if: needs.qa-gate.outputs.decision == 'escalate'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const prNum = Number('${{ needs.resolve.outputs.pr_number }}');
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: prNum,
+              labels: ['ai-escalated', 'needs-human'],
+            });
+            await github.rest.pulls.requestReviewers({
+              owner: context.repo.owner, repo: context.repo.repo,
+              pull_number: prNum,
+              team_reviewers: ['engineering'],
+            });
