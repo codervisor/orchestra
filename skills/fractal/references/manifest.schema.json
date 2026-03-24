@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fractal-manifest.schema.json",
+  "title": "Fractal Decomposition Manifest",
+  "description": "Tracks the state of a fractal decomposition run — tree structure, node statuses, and metrics.",
+  "type": "object",
+  "required": ["id", "status", "config", "tree"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^fractal-[0-9]+$",
+      "description": "Work ID in format fractal-{unix-timestamp}"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["decomposing", "solving", "reunifying", "complete", "failed"],
+      "description": "Current phase of the fractal run"
+    },
+    "source": {
+      "type": "string",
+      "description": "Original task description or spec path"
+    },
+    "config": {
+      "type": "object",
+      "required": ["max_depth", "max_children", "max_total_nodes", "split_strategy", "reunification"],
+      "properties": {
+        "max_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 3
+        },
+        "max_children": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 10,
+          "default": 5
+        },
+        "max_total_nodes": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 50,
+          "default": 20
+        },
+        "split_strategy": {
+          "type": "string",
+          "enum": ["orthogonal", "aspect-based", "temporal"],
+          "default": "orthogonal"
+        },
+        "reunification": {
+          "type": "string",
+          "enum": ["lossless-merge", "best-child", "summary-merge"],
+          "default": "lossless-merge"
+        },
+        "solve_mode": {
+          "type": "string",
+          "enum": ["parallel", "sequential", "factory"],
+          "default": "parallel"
+        },
+        "output_mode": {
+          "type": "string",
+          "enum": ["code", "design", "analysis"],
+          "default": "code"
+        }
+      }
+    },
+    "tree": {
+      "type": "object",
+      "description": "Recursive tree structure. Keys are node paths (e.g., 'root', '1-auth', '1-auth/1-oauth').",
+      "additionalProperties": {
+        "$ref": "#/$defs/tree_node"
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "cycle_time_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tree_depth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_nodes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "leaf_nodes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "solve_parallelism": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of leaves solved concurrently"
+        },
+        "pruned_nodes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "budget_enforced": {
+          "type": "boolean",
+          "description": "True if max_total_nodes cap was hit during decomposition"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "tree_node": {
+      "type": "object",
+      "required": ["slug", "depth", "status"],
+      "properties": {
+        "slug": {
+          "type": "string",
+          "description": "Short identifier for this node (e.g., 'auth', 'data-layer')"
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "decomposed", "leaf", "solving", "solved", "reunifying", "reunified", "pruned", "failed", "forced-leaf"]
+        },
+        "scope": {
+          "type": "string",
+          "description": "What this node is responsible for"
+        },
+        "boundaries": {
+          "type": "string",
+          "description": "What this node is NOT responsible for"
+        },
+        "inputs": {
+          "type": "string",
+          "description": "Dependencies from sibling nodes"
+        },
+        "outputs": {
+          "type": "string",
+          "description": "What this node produces"
+        },
+        "children": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of child node paths"
+        },
+        "solve_report": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["COMPLETE", "PARTIAL", "FAILED"] },
+            "files": { "type": "string" },
+            "summary": { "type": "string" },
+            "interfaces": { "type": "string" }
+          }
+        },
+        "reunify_report": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["MERGED", "CONFLICT", "PARTIAL"] },
+            "conflicts": { "type": "string" },
+            "resolution": { "type": "string" },
+            "summary": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

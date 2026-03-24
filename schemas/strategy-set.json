@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Strategy Set",
+  "description": "Output schema for swarm STRATEGIZE agent step",
+  "type": "object",
+  "properties": {
+    "strategies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "approach": { "type": "string" },
+          "prompt_suffix": { "type": "string" }
+        },
+        "required": ["id", "name", "approach"]
+      }
+    }
+  },
+  "required": ["strategies"]
+}

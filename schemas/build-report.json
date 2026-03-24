@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Build Report",
+  "description": "Output schema for factory BUILD agent step",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["COMPLETE", "PARTIAL"]
+    },
+    "files": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "commits": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": ["status", "files"]
+}

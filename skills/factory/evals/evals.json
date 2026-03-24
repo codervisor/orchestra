@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "factory-skill-evals",
+  "description": "Behavioral evals for the factory skill — tests skill-specific mechanics (BUILD/INSPECT pipeline, rework loops, manifest tracking, isolation)",
+  "evals": [
+    {
+      "id": "e2e-sample-spec",
+      "name": "End-to-end on sample spec",
+      "description": "Factory run on the trivial sample spec produces a branch with implementation and a PR",
+      "prompt_file": "prompts/e2e-sample-spec.md",
+      "assertions": [
+        "A git branch named factory/{work-id} exists with commits",
+        "The implementation matches the spec (greet.sh created and functional)",
+        "A manifest.json is written to .factory/{work-id}/",
+        "INSPECT subagent returns a verdict (APPROVE or REWORK)",
+        "If approved, a PR is created via gh"
+      ]
+    },
+    {
+      "id": "rework-loop",
+      "name": "Rework loop fires on deliberate bug",
+      "description": "INSPECT catches an issue and BUILD fixes it in a subsequent attempt",
+      "prompt_file": "prompts/rework-loop.md",
+      "assertions": [
+        "manifest.json shows at least 2 attempts",
+        "First attempt inspect verdict is REWORK with specific items",
+        "Second attempt addresses the rework items",
+        "Final status is approved or escalated"
+      ]
+    },
+    {
+      "id": "rework-limit",
+      "name": "Rework limit enforced at 3 attempts",
+      "description": "After 3 failed BUILD-INSPECT cycles, the factory escalates instead of looping forever",
+      "prompt_file": "prompts/rework-limit.md",
+      "assertions": [
+        "manifest.json shows exactly 3 attempts",
+        "Final status is escalated",
+        "No PR is created",
+        "User is informed of the escalation with last rework items"
+      ]
+    },
+    {
+      "id": "manifest-tracking",
+      "name": "Manifest records full attempt history",
+      "description": "Every BUILD and INSPECT cycle is recorded in the manifest with structured data",
+      "prompt_file": "prompts/manifest-tracking.md",
+      "assertions": [
+        "manifest.json exists at .factory/{work-id}/manifest.json",
+        "Each attempt has build.files_changed, build.tests, build.commit",
+        "Each attempt has inspect.verdict and inspect.summary",
+        "metrics.cycle_time_seconds is a positive number",
+        "metrics.first_pass_yield is a boolean"
+      ]
+    },
+    {
+      "id": "adversarial-isolation",
+      "name": "INSPECT has fresh context (no builder bias)",
+      "description": "The INSPECT subagent is spawned without worktree isolation and without the BUILD conversation context",
+      "prompt_file": "prompts/adversarial-isolation.md",
+      "assertions": [
+        "INSPECT subagent prompt contains only the spec and diff reference, not BUILD reasoning",
+        "INSPECT is spawned as a separate Agent call (not resumed from BUILD)",
+        "INSPECT does not use isolation: worktree"
+      ]
+    },
+    {
+      "id": "concurrent-isolation",
+      "name": "Concurrent runs don't interfere",
+      "description": "Two factory runs with different specs use separate work IDs and branches",
+      "prompt_file": "prompts/concurrent-isolation.md",
+      "assertions": [
+        "Each run has a unique work ID (different timestamps)",
+        "Each run uses a different branch (factory/{work-id-1} vs factory/{work-id-2})",
+        "Each run has its own manifest directory"
+      ]
+    }
+  ]
+}

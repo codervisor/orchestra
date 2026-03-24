@@ -1,0 +1,3 @@
+[workspace]
+members = ["orchestra-core", "orchestra-cli"]
+resolver = "2"

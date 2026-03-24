@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Inspect Verdict",
+  "description": "Output schema for factory INSPECT agent step",
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["APPROVE", "REWORK"]
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": ["completeness", "correctness", "security", "spec-conformance", "quality"]
+          },
+          "description": { "type": "string" }
+        },
+        "required": ["category", "description"]
+      }
+    }
+  },
+  "required": ["verdict"]
+}

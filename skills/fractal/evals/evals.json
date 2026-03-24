@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "fractal-skill-evals",
+  "description": "Behavioral evals for the fractal decomposition skill — tests skill-specific mechanics (leaf detection, budget enforcement, scope isolation, parallel solve, reunification)",
+  "evals": [
+    {
+      "id": "e2e-design-decomposition",
+      "name": "End-to-end design decomposition",
+      "description": "Fractal decompose on a system design task produces a tree of sub-specs and a unified design document",
+      "prompt_file": "prompts/e2e-design-decomposition.md",
+      "assertions": [
+        "A .fractal/{work-id}/ directory is created with manifest.json",
+        "root.md contains the original task",
+        "tree/ contains at least 3 child directories with spec.md files",
+        "At least one child is further decomposed (depth >= 2)",
+        "All leaf nodes have result.md files after solve phase",
+        "Non-leaf nodes have result.md after reunification",
+        "output.md exists with the final merged result",
+        "manifest.json shows status: complete with tree metrics"
+      ]
+    },
+    {
+      "id": "leaf-detection",
+      "name": "Simple tasks detected as leaves without splitting",
+      "description": "A task that is already atomic should be detected as a LEAF and solved directly without unnecessary decomposition",
+      "prompt_file": "prompts/leaf-detection.md",
+      "assertions": [
+        "DECOMPOSE VERDICT is LEAF with a reason",
+        "No child directories created under tree/",
+        "The task is solved directly",
+        "manifest.json shows tree_depth: 1 and leaf_nodes: 1"
+      ]
+    },
+    {
+      "id": "budget-enforcement",
+      "name": "Node budget caps total tree size",
+      "description": "When max_total_nodes would be exceeded, remaining nodes are forced to become leaves",
+      "prompt_file": "prompts/budget-enforcement.md",
+      "assertions": [
+        "Total nodes in the tree does not exceed max_total_nodes",
+        "At least one node that could have been split was forced to LEAF",
+        "manifest.json records the budget limit was hit",
+        "All forced leaves still get solved"
+      ]
+    },
+    {
+      "id": "parallel-solve",
+      "name": "Leaf nodes solved in parallel",
+      "description": "When solve_mode is parallel, all independent leaf nodes are spawned as concurrent subagents",
+      "prompt_file": "prompts/parallel-solve.md",
+      "assertions": [
+        "Multiple Agent tool calls appear in the same message for leaf solving",
+        "Each solve subagent receives correct scope and boundaries",
+        "Sibling specs are included as read-only context",
+        "All SOLVE REPORTs are collected and recorded"
+      ]
+    },
+    {
+      "id": "scope-isolation",
+      "name": "Sibling scopes do not overlap",
+      "description": "Each child sub-spec has explicit boundaries and does not encroach on sibling scopes",
+      "prompt_file": "prompts/scope-isolation.md",
+      "assertions": [
+        "Each child spec.md has a 'boundaries' section listing what it does NOT handle",
+        "No two siblings claim the same responsibility",
+        "Solve results stay within declared scope",
+        "Reunification step identifies any scope leakage"
+      ]
+    },
+    {
+      "id": "code-decomposition",
+      "name": "Code task decomposed and implemented",
+      "description": "A coding task is decomposed into sub-specs, each solved in an isolated worktree, then code merged via reunification",
+      "prompt_file": "prompts/code-decomposition.md",
+      "tags": ["code", "worktree"],
+      "assertions": [
+        "SOLVE subagents run with isolation: worktree",
+        "Each leaf commits with fractal({slug}): prefix",
+        "REUNIFY integrates code from all leaves",
+        "Final code compiles/passes tests",
+        "output.md references all files changed"
+      ]
+    },
+    {
+      "id": "reunification-conflict",
+      "name": "Reunification detects and resolves interface conflicts",
+      "description": "When sibling solutions have mismatched interfaces, the reunify step detects and resolves them",
+      "prompt_file": "prompts/reunification-conflict.md",
+      "assertions": [
+        "REUNIFY REPORT shows CONFLICTS field with at least one conflict",
+        "RESOLUTION field explains how each conflict was resolved",
+        "Merged result is internally consistent",
+        "STATUS is MERGED (not CONFLICT) after resolution"
+      ]
+    }
+  ]
+}

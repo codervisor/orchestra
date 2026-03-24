@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Solve Report",
+  "description": "Output schema for fractal SOLVE agent step",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["COMPLETE", "PARTIAL"]
+    },
+    "files": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "interfaces": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "required": ["status", "files"]
+}

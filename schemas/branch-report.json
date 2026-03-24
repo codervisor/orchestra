@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Branch Report",
+  "description": "Output schema for swarm BRANCH SOLVE agent step",
+  "type": "object",
+  "properties": {
+    "key_insight": { "type": "string" },
+    "fragment_summary": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["COMPLETE", "PARTIAL"]
+    },
+    "files": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "required": ["key_insight", "status"]
+}
