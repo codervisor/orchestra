@@ -120,13 +120,14 @@ jobs:
       # /delegate: commits unstaged changes to new branch,
       # Copilot coding agent opens a draft PR asynchronously in the cloud
       - name: Write prompt file
+        id: delegate-prompt
         env:
           ISSUE_NUMBER: ${{ needs.pickup.outputs.issue_number }}
           ISSUE_TITLE: ${{ needs.pickup.outputs.issue_title }}
           ISSUE_BODY: ${{ needs.pickup.outputs.issue_body }}
         run: |
-          # Write prompt to file without shell expansion of body content.
-          # printf '%s' safely writes the variable without interpreting it.
+          PROMPT_FILE=$(mktemp "${RUNNER_TEMP}/prompt-XXXXXX.txt")
+          # printf '%s' safely writes variables without shell expansion.
           {
             printf '/delegate Implement issue #%s: %s\n\n' "$ISSUE_NUMBER" "$ISSUE_TITLE"
             printf '%s\n\n' "$ISSUE_BODY"
@@ -136,11 +137,13 @@ jobs:
           - Add or update tests
           - Do NOT modify CI/CD configs or infrastructure files
           STATIC_EOF
-          } > /tmp/prompt.txt
+          } > "$PROMPT_FILE"
+          echo "prompt_file=$PROMPT_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Delegate to Copilot coding agent
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROMPT_FILE: ${{ steps.delegate-prompt.outputs.prompt_file }}
         run: |
           copilot --autopilot \
             --allow-tool='shell(git:*)' \
@@ -148,7 +151,8 @@ jobs:
             --allow-tool=write \
             --no-ask-user \
             --model "claude-sonnet-4" \
-            -p "Read the file /tmp/prompt.txt for your full instructions. Follow them exactly."
+            -p "Read the file ${PROMPT_FILE} for your full instructions. Follow them exactly."
+          rm -f "$PROMPT_FILE"
 
       # Poll for the PR that Copilot coding agent creates
       - name: Wait for Copilot PR
@@ -277,14 +281,15 @@ jobs:
       # --allow-tool / --deny-tool = declarative permission boundary
       # --no-ask-user = never block waiting for human input
       - name: Write prompt file
+        id: local-prompt
         env:
           ISSUE_NUMBER: ${{ needs.pickup.outputs.issue_number }}
           ISSUE_TITLE: ${{ needs.pickup.outputs.issue_title }}
           ISSUE_BODY: ${{ needs.pickup.outputs.issue_body }}
           ATTEMPT: ${{ steps.counter.outputs.attempt }}
         run: |
-          # Write prompt to file without shell expansion of body content.
-          # printf '%s' safely writes the variable without interpreting it.
+          PROMPT_FILE=$(mktemp "${RUNNER_TEMP}/prompt-XXXXXX.txt")
+          # printf '%s' safely writes variables without shell expansion.
           {
             printf 'Implement issue #%s: %s\n\n' "$ISSUE_NUMBER" "$ISSUE_TITLE"
             printf '%s\n\n' "$ISSUE_BODY"
@@ -300,11 +305,13 @@ jobs:
           - Do NOT modify CI/CD, Docker, or infra files
           STATIC_EOF
             printf -- '- Commit with: feat(#%s): <summary>\n' "$ISSUE_NUMBER"
-          } > /tmp/prompt.txt
+          } > "$PROMPT_FILE"
+          echo "prompt_file=$PROMPT_FILE" >> "$GITHUB_OUTPUT"
 
       - name: AI Implementation
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROMPT_FILE: ${{ steps.local-prompt.outputs.prompt_file }}
         run: |
           copilot --autopilot \
             --max-autopilot-continues 15 \
@@ -321,7 +328,8 @@ jobs:
             --deny-tool='shell(wget:*)' \
             --no-ask-user \
             --model "claude-sonnet-4" \
-            -p "Read the file /tmp/prompt.txt for your full instructions. Follow them exactly."
+            -p "Read the file ${PROMPT_FILE} for your full instructions. Follow them exactly."
+          rm -f "$PROMPT_FILE"
 
       - name: Push changes
         run: |
