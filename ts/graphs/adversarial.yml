@@ -1,0 +1,53 @@
+name: adversarial
+config:
+  max_rounds: 5
+  consecutive_clean_threshold: 2
+
+nodes:
+  generate:
+    type: agent
+    config:
+      prompt: skills/adversarial/prompts/generate.md
+      tools: [Read, Edit, Write, Bash, Glob, Grep]
+      max_turns: 30
+      output_schema: schemas/generate-report.json
+      context:
+        spec: spec.path
+
+  gate:
+    type: run
+    config:
+      command: "npm test && npm run lint"
+      match: ["*.ts", "*.rs"]
+
+  attack:
+    type: agent
+    config:
+      prompt: skills/adversarial/prompts/attack.md
+      tools: [Read, Bash, Glob, Grep]
+      max_turns: 15
+      output_schema: schemas/attack-report.json
+
+  route:
+    type: decision
+    config:
+      input: steps.attack.output.verdict
+      cases:
+        clean: done
+        issues_found: generate
+
+  done:
+    type: run
+    config:
+      command: "echo 'Adversarial pipeline complete'"
+
+edges:
+  - chain: [generate, gate, attack, route]
+  - from: route
+    to: done
+    on: clean
+  - from: route
+    to: generate
+    on: issues_found
+    max: 5
+    exhaust: escalate

@@ -1,0 +1,80 @@
+name: fractal
+config:
+  max_depth: 3
+  max_total_nodes: 20
+  complexity_threshold: 30
+
+nodes:
+  complexity-check:
+    type: run
+    config:
+      command: "orchestra fractal complexity"
+
+  decompose:
+    type: agent
+    config:
+      prompt: skills/fractal/prompts/decompose.md
+      tools: [Read, Glob, Grep]
+      max_turns: 15
+      output_schema: schemas/decompose-verdict.json
+      context:
+        spec: spec.path
+
+  decompose-gate:
+    type: run
+    config:
+      command: "orchestra fractal gate --input -"
+
+  schedule:
+    type: run
+    config:
+      command: "orchestra fractal schedule --input -"
+
+  solve:
+    type: fan
+    config:
+      mode: parallel
+      over: steps.schedule.output.waves
+      body: solve-leaf
+
+  solve-leaf:
+    type: agent
+    config:
+      prompt: skills/fractal/prompts/solve.md
+      tools: [Read, Edit, Write, Bash, Glob, Grep]
+      max_turns: 30
+      isolation: worktree
+      output_schema: schemas/solve-report.json
+
+  solve-gate:
+    type: run
+    config:
+      command: "npm test && npm run lint"
+      match: ["*.ts", "*.rs"]
+
+  reunify:
+    type: run
+    config:
+      command: "orchestra fractal reunify --input -"
+
+  reunify-resolve:
+    type: agent
+    config:
+      prompt: skills/fractal/prompts/reunify.md
+      tools: [Read, Edit, Write, Bash]
+      max_turns: 20
+    middleware:
+      condition: steps.reunify.output.needs_ai
+
+  prune:
+    type: run
+    config:
+      command: "orchestra fractal prune --input -"
+
+  done:
+    type: run
+    config:
+      command: "echo 'Fractal pipeline complete'"
+
+edges:
+  - chain: [complexity-check, decompose, decompose-gate, schedule, solve, solve-gate, reunify, reunify-resolve, prune, done]

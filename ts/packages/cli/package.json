@@ -1,0 +1,26 @@
+{
+  "name": "@orchestra/cli",
+  "version": "0.1.0",
+  "description": "CLI entry point for Orchestra graph orchestration",
+  "type": "module",
+  "bin": {
+    "orchestra-ts": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "@orchestra/core": "*",
+    "@orchestra/algorithms": "*",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
