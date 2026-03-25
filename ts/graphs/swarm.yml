@@ -1,0 +1,76 @@
+name: swarm
+config:
+  max_forks: 3
+  convergence_threshold: 0.8
+  max_checkpoints: 3
+
+nodes:
+  strategize:
+    type: agent
+    config:
+      prompt: skills/swarm/prompts/strategize.md
+      tools: [Read, Glob, Grep]
+      max_turns: 10
+      output_schema: schemas/strategy-set.json
+      context:
+        spec: spec.path
+
+  explore:
+    type: fan
+    config:
+      mode: parallel
+      over: steps.strategize.output.strategies
+      body: explore-branch
+
+  explore-branch:
+    type: agent
+    config:
+      prompt: skills/swarm/prompts/branch-solve.md
+      tools: [Read, Edit, Write, Bash, Glob, Grep]
+      max_turns: 30
+      isolation: worktree
+      output_schema: schemas/branch-report.json
+
+  checkpoint:
+    type: run
+    config:
+      command: "orchestra swarm checkpoint --input -"
+
+  checkpoint-route:
+    type: decision
+    config:
+      input: steps.checkpoint.output
+      cases:
+        converged: merge
+        continue: explore
+
+  merge:
+    type: agent
+    config:
+      prompt: skills/swarm/prompts/merge.md
+      tools: [Read, Edit, Write, Bash]
+      max_turns: 20
+      output_schema: schemas/merge-report.json
+
+  merge-gate:
+    type: run
+    config:
+      command: "npm test && npm run lint"
+      match: ["*.ts", "*.rs"]
+
+  done:
+    type: run
+    config:
+      command: "echo 'Swarm pipeline complete'"
+
+edges:
+  - chain: [strategize, explore, checkpoint, checkpoint-route]
+  - from: checkpoint-route
+    to: merge
+    on: converged
+  - from: checkpoint-route
+    to: explore
+    on: continue
+    max: 3
+    exhaust: merge
+  - chain: [merge, merge-gate, done]

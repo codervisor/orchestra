@@ -1,0 +1,57 @@
+name: factory
+config:
+  max_rework: 3
+
+nodes:
+  build:
+    type: agent
+    config:
+      prompt: skills/factory/prompts/build.md
+      tools: [Read, Edit, Write, Bash, Glob, Grep]
+      max_turns: 30
+      output_schema: schemas/build-report.json
+      context:
+        spec: spec.path
+
+  gate:
+    type: run
+    config:
+      command: "npm test && npm run lint"
+      match: ["*.ts", "*.rs"]
+    middleware:
+      on_fail: rework(build)
+
+  inspect:
+    type: agent
+    config:
+      prompt: skills/factory/prompts/inspect.md
+      tools: [Read, Glob, Grep]
+      max_turns: 10
+      output_schema: schemas/inspect-verdict.json
+      context:
+        spec: spec.path
+        build_output: steps.build.output
+
+  route:
+    type: decision
+    config:
+      input: steps.inspect.output.verdict
+      cases:
+        approve: done
+        rework: build
+
+  done:
+    type: run
+    config:
+      command: "echo 'Factory pipeline complete'"
+
+edges:
+  - chain: [build, gate, inspect, route]
+  - from: route
+    to: done
+    on: approve
+  - from: route
+    to: build
+    on: rework
+    max: 3
+    exhaust: escalate
